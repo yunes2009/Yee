@@ -4,8 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # ⚠️ ضع رابط موقعك الرئيسي على GitHub Pages هنا (بدون / في النهاية)
 GITHUB_BASE_URL = "https://yunes2009.github.io/Yee/"
-BOT_TOKEN = "8538003058:AAEeltf-MObXjAshSv7vFyz8OKjubr2juVg"
-
+BOT_TOKEN = "8538003058:AAG4mtW37JnPDkQBprB6dYfKFbV3vfhmrW8"
 # القائمة الرئيسية للوحدات
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
