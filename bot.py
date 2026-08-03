@@ -3,7 +3,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # ⚠️ ضع رابط موقعك الرئيسي على GitHub Pages هنا (بدون / في النهاية)
-GITHUB_BASE_URL = "https://yourusername.github.io/my-cyber-lab"
+GITHUB_BASE_URL = "https://yunes2009.github.io/Yee/"
 BOT_TOKEN = "8538003058:AAEeltf-MObXjAshSv7vFyz8OKjubr2juVg"
 
 # القائمة الرئيسية للوحدات
