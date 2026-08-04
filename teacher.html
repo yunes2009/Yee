@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>صفحة المدرس — عرض المشاركات</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial; background:#0f172a; color:#e6eef8; padding:18px}
+    .wrap{max-width:980px;margin:0 auto}
+    h1{color:#7dd3fc}
+    .controls{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+    button{background:#0369a1;color:white;border:0;padding:10px 14px;border-radius:8px;cursor:pointer}
+    button[disabled]{opacity:.6}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    .card{background:#1e293b;padding:10px;border-radius:10px;border:1px solid #334155}
+    img{max-width:100%;border-radius:6px}
+    audio{width:100%}
+    .meta{font-size:13px;color:#94a3b8;margin-top:8px}
+    .small{font-size:12px;color:#9ca3af}
+    .notice{background:#06374a;color:#7fffd4;padding:8px;border-radius:8px;margin-bottom:12px}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.min.js"></script>
+  <script src="./config.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>📥 لوحة المدرس — عرض مشاركات الطلاب</h1>
+    <p class="small">هذه الصفحة تعرض الملفات المسجَّلة (صور/صوت) من الطلاب. تأكد من تعبئة <code>config.js</code> أو استخدام متغيرات البيئة عند النشر.</p>
+    <div class="notice">ملاحظة: إذا كان الـ bucket خاصًا (private) فلن تُعرض الملفات مباشرةً دون توليد روابط موقعة من الخادم الخلفي.</div>
+
+    <div class="controls">
+      <button id="refreshBtn">تحديث</button>
+      <div id="status" class="small">جاهز</div>
+    </div>
+
+    <div id="list" class="grid" aria-live="polite"></div>
+
+  </div>
+
+<script>
+const statusEl = document.getElementById('status');
+const listEl = document.getElementById('list');
+const refreshBtn = document.getElementById('refreshBtn');
+
+function showStatus(msg){ statusEl.textContent = msg; }
+
+async function initSupabase(){
+  const cfg = window.APP_CONFIG || {};
+  if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY || !cfg.SUPABASE_BUCKET){
+    showStatus('خطأ: يرجى إعداد SUPABASE_URL و SUPABASE_ANON_KEY و SUPABASE_BUCKET في config.js');
+    return null;
+  }
+  if (!window.supabase || !window.supabase.createClient){
+    showStatus('خطأ: مكتبة Supabase غير محمّلة. تأكد من اتصال الإنترنت أو وجود المكتبة.');
+    return null;
+  }
+  const sup = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+  return { sup, bucket: cfg.SUPABASE_BUCKET };
+}
+
+function formatDate(iso){ try{ return new Date(iso).toLocaleString(); }catch(e){ return iso; } }
+
+async function renderSubmissions(){
+  listEl.innerHTML = '';
+  showStatus('جارٍ جلب البيانات...');
+  const svc = await initSupabase();
+  if (!svc) return;
+  const { sup, bucket } = svc;
+
+  try{
+    // حاول جلب صفوف من جدول submissions أولاً
+    const { data: rows, error: rowsErr } = await sup.from('submissions').select('*').order('created_at', { ascending: false }).limit(200);
+    if (rowsErr) console.warn('submissions select failed', rowsErr);
+
+    if (rows && rows.length){
+      for (const r of rows){
+        const card = document.createElement('div'); card.className='card';
+        const fn = r.filename || '';
+        let previewEl = document.createElement('div');
+
+        if (fn.toLowerCase().match(/\.(webp|jpg|jpeg|png|gif)$/) || fn.toLowerCase().includes('.webp') || fn.toLowerCase().includes('.jpg') ){
+          // image
+          // حاول توليد رابط عام
+          const { data: urlData, error: urlErr } = sup.storage.from(bucket).getPublicUrl(fn);
+          const publicURL = (urlData && urlData.publicURL) ? urlData.publicURL : null;
+          const img = document.createElement('img');
+          if (publicURL) img.src = publicURL;
+          else img.alt = 'صورة (private أو لم يتم إيجادها)';
+          previewEl.appendChild(img);
+        } else if (fn.toLowerCase().match(/\.(ogg|mp3|wav|m4a)$/) || fn.toLowerCase().includes('voice')){
+          // audio
+          const { data: urlData, error: urlErr } = sup.storage.from(bucket).getPublicUrl(fn);
+          const publicURL = (urlData && urlData.publicURL) ? urlData.publicURL : null;
+          const audio = document.createElement('audio'); audio.controls = true;
+          if (publicURL) audio.src = publicURL;
+          previewEl.appendChild(audio);
+        } else {
+          // unknown: try to list file metadata via storage
+          const p = document.createElement('div'); p.textContent = fn || '(لا يوجد اسم ملف)'; previewEl.appendChild(p);
+        }
+
+        const meta = document.createElement('div'); meta.className='meta';
+        meta.innerHTML = `<strong>الملف:</strong> ${fn || '-'}<br><strong>الرسالة:</strong> ${r.message || '-'}<br><strong>الوقت:</strong> ${formatDate(r.created_at || r.createdAt || r.inserted_at || '')}`;
+
+        card.appendChild(previewEl);
+        card.appendChild(meta);
+        listEl.appendChild(card);
+      }
+      showStatus('تم العرض (' + rows.length + ')');
+      return;
+    }
+
+    // إذا لم توجد صفوف في submissions: حاول استخدام storage.list لعرض الملفات
+    const { data: list, error: listErr } = await sup.storage.from(bucket).list('', { limit: 200, offset: 0, sortBy: { column: 'name', order: 'desc' } });
+    if (listErr){
+      showStatus('خطأ في الحصول على القائمة من التخزين: ' + (listErr.message || listErr.statusText || listErr));
+      return;
+    }
+
+    if (list && list.length){
+      for (const item of list){
+        const card = document.createElement('div'); card.className='card';
+        const { name } = item;
+        const { data: urlData } = sup.storage.from(bucket).getPublicUrl(name);
+        const publicURL = (urlData && urlData.publicURL) ? urlData.publicURL : null;
+        if (publicURL && name.match(/\.(webp|jpg|jpeg|png|gif)$/)){
+          const img = document.createElement('img'); img.src = publicURL; card.appendChild(img);
+        } else if (publicURL && name.match(/\.(ogg|mp3|wav|m4a)$/)){
+          const audio = document.createElement('audio'); audio.controls=true; audio.src = publicURL; card.appendChild(audio);
+        } else {
+          const p = document.createElement('div'); p.textContent = name; card.appendChild(p);
+        }
+        const meta = document.createElement('div'); meta.className='meta'; meta.innerHTML = `<strong>الملف:</strong> ${name}`;
+        card.appendChild(meta);
+        listEl.appendChild(card);
+      }
+      showStatus('تم العرض من التخزين (' + list.length + ')');
+      return;
+    }
+
+    showStatus('لا توجد ملفات للعرض.');
+  } catch(err){
+    console.error(err); showStatus('فشل جلب البيانات: ' + (err.message||err));
+  }
+}
+
+refreshBtn.addEventListener('click', ()=>{ renderSubmissions(); });
+
+// load on open
+renderSubmissions();
+
+</script>
+</body>
+</html>

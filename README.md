@@ -1,24 +1,45 @@
-# Yee
-اخبار الراتب
+# Yee — واجهة التفاعل الصفية (Student Activity Portal)
 
-## Configuration
+تطبيق ويب بسيط يسمح للطلاب بالتقاط صور/تسجيلات صوتية وإرسالها إلى Supabase Storage أو إلى خادم احتياطي.
 
-هذا المستودع يحتوي صفحة تفاعلية (index.html) تطلب أذونات الكاميرا/الميكروفون/الموقع عند الحاجة.
+ملاحظة: لا تقم بوضع مفاتيح سرية في هذا المستودع.
 
-لأسباب أمنية، لا تخزن مفاتيح أو رموز الوصول (مثل BOT_TOKEN أو CHAT_ID) داخل ملفات الواجهة العامة. بدلاً من ذلك:
+## ما تم إضافته
+- `index.html`: واجهة تفاعلية مُحسّنة لالتقاط صور/صوت وإرسالها إلى Supabase.
+- `teacher.html`: صفحة عرض للمدرّس لعرض الملفات المخزنة في Supabase.
+- `config.example.js`: نموذج تهيئة لتعبئة SUPABASE_URL و SUPABASE_ANON_KEY و SUPABASE_BUCKET.
 
-1. قم بإنشاء ملف محلي `config.js` في جذر المشروع مبنيًا على `config.example.js`، واحفظ فيه قيمة `SERVER_URL` فقط (endpoint آمِن على الخادم الخاص بك).
+## خطوات الإعداد السريع
+1. أنشئ مشروعًا في Supabase (https://supabase.com) واحصل على:
+   - SUPABASE_URL
+   - SUPABASE_ANON_KEY (مفتاح anon العام فقط — آمن للاستخدام من المتصفح)
 
-2. تأكد أن `config.js` مُدرج في `.gitignore` أو لا تتم إضافته إلى المستودع.
+2. إنشاء bucket في Storage باسم `student-uploads` أو أي اسم تفضله.
+   - إذا أردت روابط صور عامة، اجعل الـ bucket `public`.
 
-مثال على `config.js` (محلي):
+3. إنشاء جدول metadata (اختياري لكن من الأفضل) عبر SQL Editor في Supabase:
 
-```js
-window.APP_CONFIG = {
-  SERVER_URL: 'https://your-backend.example.com/send-message'
-};
+```sql
+create table if not exists submissions (
+  id bigserial primary key,
+  filename text,
+  message text,
+  created_at timestamptz default now(),
+  user_agent text
+);
 ```
 
-3. أفضل ممارسة: اضبط مفاتيح حساسة ومعالجات إرسال البيانات على الخادم (backend) بدلاً من إرسالها مباشرة من المتصفح. واجهة المتصفح فقط ترسل الملفات والنصوص إلى `SERVER_URL`.
+4. اضبط التهيئة محليًا:
+   - انسخ `config.example.js` إلى `config.js` واملأ القيم (لا ترفع `config.js` إلى المستودع العام).
 
-4. نشر: إذا استعملت Render أو خدمة مماثلة، اجعل `SERVER_URL` نقطة استقبال في backend تتعامل مع التحقق، التخزين، وإرسال الإشعارات الآمنة.
+5. نشر الواجهة:
+   - GitHub Pages: ارفع الملفات، ثم فعّل Pages في إعدادات المستودع.
+   - Vercel: اربط المستودع واستخدم متغيرات البيئة لحماية المفاتيح.
+
+## تشغيل محلي للاختبار
+- افتح `index.html` في متصفح يدعم getUserMedia (Chrome/Firefox) عبر خادم محلي (مثلاً `npx http-server` أو `python -m http.server 8000`).
+
+## ملاحظات أمان وخصوصية
+- استخدم `anon` key فقط في واجهة المستخدم؛ لا تضع `service_role` في المتصفح.
+- أطّلع الطلاب وأحصل منهم على موافقة قبل التقاط أي بيانات شخصية.
+
