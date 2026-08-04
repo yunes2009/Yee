@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: yee-telegram-bot
+    env: python
+    plan: free
+    repo: https://github.com/yunes2009/Yee
+    branch: add-render-bot
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: GITHUB_BASE_URL
+        value: "https://yunes2009.github.io/Yee"
+      - key: RENDER_EXTERNAL_URL
+        value: "" # Leave empty to use polling mode (Background Worker). If you want webhook mode, set this to your public service URL (https://your-service.onrender.com)
+      # NOTE: Do NOT put BOT_TOKEN here. Add BOT_TOKEN as an Environment Variable/Secret in the Render dashboard for the service.
