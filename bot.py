@@ -5,10 +5,12 @@ Usage:
 - Set environment variables:
     BOT_TOKEN (required)
     GITHUB_BASE_URL (optional, defaults to example)
-    RENDER_EXTERNAL_URL (optional, e.g. https://your-service.onrender.com) 
+    RENDER_EXTERNAL_URL (optional, e.g. https://your-service.onrender.com)
       If present, the bot will try to run as a webhook server and register webhook at:
         {RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}
       Otherwise the bot falls back to long polling (useful for Render Background Worker).
+    ADMIN_ID (optional) - comma-separated Telegram user IDs allowed to use the admin panel.
+    ADMIN_USERNAME (optional) - comma-separated Telegram usernames (without @) allowed to use the admin panel.
 - Start: `python bot.py` or use uvicorn if you adapt to ASGI (not required here).
 """
 import os
@@ -33,9 +35,52 @@ GITHUB_BASE_URL = os.environ.get("GITHUB_BASE_URL", "https://example.github.io/Y
 # Optional: external URL of Render service (with https://). If set, webhook mode will be used.
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
+# Admin access control
+ADMIN_IDS = set()
+admin_env = os.environ.get("ADMIN_ID", "")
+if admin_env:
+    for part in admin_env.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ADMIN_IDS.add(int(part))
+
+# Optional: allow matching by username as well (comma-separated, without @)
+ADMIN_USERNAMES = set()
+admin_user_env = os.environ.get("ADMIN_USERNAME", "")
+if admin_user_env:
+    for part in admin_user_env.split(","):
+        p = part.strip().lstrip("@")
+        if p:
+            ADMIN_USERNAMES.add(p.lower())
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+if not ADMIN_IDS and not ADMIN_USERNAMES:
+    logger.warning("No ADMIN_ID or ADMIN_USERNAME set; admin checks are disabled and the bot will allow anyone to open the admin panel.")
+
+# --- Admin helpers ---
+
+def _get_user_from_update(update: Update):
+    if update.effective_user:
+        return update.effective_user
+    if update.callback_query and update.callback_query.from_user:
+        return update.callback_query.from_user
+    return None
+
+
+def is_admin(update: Update) -> bool:
+    user = _get_user_from_update(update)
+    if not user:
+        return False
+    # If no admin configured, fall back to allow all (backwards compatibility)
+    if not ADMIN_IDS and not ADMIN_USERNAMES:
+        return True
+    if user.id in ADMIN_IDS:
+        return True
+    if user.username and user.username.lower() in ADMIN_USERNAMES:
+        return True
+    return False
 
 # --- Handlers ---
 async def send_main_menu_target(target, context: ContextTypes.DEFAULT_TYPE):
@@ -57,15 +102,34 @@ async def send_main_menu_target(target, context: ContextTypes.DEFAULT_TYPE):
     else:
         await target.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Restrict /start to admins only
+    if not is_admin(update):
+        # reply differently depending on source
+        if update.callback_query:
+            await update.callback_query.answer("❌ غير مصرح. هذه لوحة خاصة بالأستاذ فقط.", show_alert=True)
+        else:
+            await update.message.reply_text("❌ غير مصرح. هذه لوحة خاصة بالأستاذ فقط.")
+        return
+
     # start may be called from /start message
     if update.callback_query:
         await send_main_menu_target(update.callback_query, context)
     else:
         await send_main_menu_target(update.message, context)
 
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+
+    # Only admins may interact with the admin buttons
+    if not is_admin(update):
+        # Inform the user that they are not authorized (use alert so they see it)
+        await query.answer("❌ غير مصرح لك. هذه لوحة خاصة بالأستاذ.", show_alert=True)
+        return
+
+    # acknowledge silently
     await query.answer()
     data = query.data
 
@@ -159,12 +223,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Fallback
     await query.edit_message_text("خيارات غير معروفة. 👀 الرجاء العودة للقائمة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("العودة", callback_data="main_menu")]]))
 
+
 # --- Build application and add handlers ---
 def build_app():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     return application
+
 
 # --- Entrypoint ---
 def main():
@@ -191,6 +257,7 @@ def main():
         # Fallback: polling mode (useful for Render background worker)
         logger.info("RENDER_EXTERNAL_URL not set. Starting in polling mode.")
         application.run_polling()
+
 
 if __name__ == "__main__":
     try:
